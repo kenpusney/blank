@@ -1,8 +1,28 @@
 <html>
 <head>
 <title>This is a blank page</title>
+<script type="text/javascript">
+  function inject(value) {
+    value = value || document.getElementsByName("script-name").item(0).value;
+    var script = document.createElement("script");
+    script.src = value;
+    script.type = "text/javascript";
+    document.body.appendChild(script);
+  }
+</script>
 </head>
 <body>
   <script src="http://sql.kimleo.net:8080/ka.js.php?id=net.kimleo.blank"></script>
+  <ul>
+    <li><input type="text" name="script-name" /> <input type="button" value="inject" onclick="inject()"/></li>
+    <li><a href="#jquery191" onclick="inject('https://cdnjs.cloudflare.com/ajax/libs/jquery/1.9.1/jquery.min.js')">Inject jQuery 1.9.1</a></li>
+    <li><a href="#lodash4-17-4" onclick="inject('https://cdnjs.cloudflare.com/ajax/libs/lodash.js/4.17.4/lodash.min.js')">Inject Lodash 4.17.4</a></li>
+    <li><a href="#ramda0-25-0" onclick="inject('https://cdnjs.cloudflare.com/ajax/libs/ramda/0.25.0/ramda.min.js')">Inject Ramda 0.25.0</a></li>
+    <li><a href="#handlebars4-0-11" onclick="inject('https://cdnjs.cloudflare.com/ajax/libs/handlebars.js/4.0.11/handlebars.min.js')">Handlebars</a></li>
+    <li><a href="#angularjs1-6" onclick="inject('https://cdnjs.cloudflare.com/ajax/libs/angular.js/1.6.7/angular.min.js')">Inject AngularJS 1.6</a></li>
+    <li><a href="#zepto" onclick="inject('http://zeptojs.com/zepto.min.js')">Inject ZeptoJS</a></li>
+    <li><a href="#underscore" onclick="inject('http://underscorejs.org/underscore-min.js')">Inject UnderscoreJS</a></li>
+    <li><a href="#backbone" onclick="inject('http://backbonejs.org/backbone-min.js')">Inject BackboneJS</a></li>
+  </ul>
 </body>
 </html>
