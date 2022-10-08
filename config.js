@@ -80,7 +80,7 @@ module.exports = {
     {
       id: "rxjs",
       name: "RxJS",
-      src: "https://unpkg.com/rxjs",
+      src: "https://unpkg.com/rxjs/dist/bundles/rxjs.umd.min.js",
       docs: "https://rxjs.dev/api",
       crossorigin: false,
     },
