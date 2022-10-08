@@ -1,0 +1,40 @@
+<html>
+<head>
+<title>This is a blank page</title>
+<script type="text/javascript">
+  function inject(value, crossorigin) {
+    value = value || document.getElementsByName("script-name").item(0).value;
+    var script = document.createElement("script");
+    script.src = value;
+    if (crossorigin) {
+      script.crossOrigin = true;
+    }
+    script.type = "text/javascript";
+    document.body.appendChild(script);
+  }
+</script>
+</head>
+<!--
+  Extracting config:
+  ```javascript
+  const REGEX = /href="#(?<id>\w+)".+inject\(\'(?<src>.+)\'\).+Inject\s(?<name>(\w|\s)+)<.+href=\"(?<docs>.+)\">/;
+  JSON.stringify(
+    txt.split("\n")
+        .filter(it => it)
+        .map(it => it.trim())
+        .map(it => it.match(REGEX))
+        .filter(it => it)
+        .map(({groups: {id, name, src, docs}})
+            => ({id, name, src, docs})));
+  ```
+-->
+<body>
+  <ul>
+    <li><input type="text" name="script-name" /> <input type="button" value="inject" onclick="inject()"/></li>
+    <% for (let library of libraries) { %>
+    <li><a href="#<%= library.id %>" onclick="inject('<%= library.src %>', <%= library.crossorigin %>)">Inject <%= library.name %></a>&nbsp;<a href="<%= library.docs %>">Docs</a></li><% } %>
+  </ul>
+
+  <canvas id="davinci" width="800" height="600"></canvas>
+</body>
+</html>

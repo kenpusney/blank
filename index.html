@@ -14,20 +14,37 @@
   }
 </script>
 </head>
+<!--
+  Extracting config:
+  ```javascript
+  const REGEX = /href="#(?<id>\w+)".+inject\(\'(?<src>.+)\'\).+Inject\s(?<name>(\w|\s)+)<.+href=\"(?<docs>.+)\">/;
+  JSON.stringify(
+    txt.split("\n")
+        .filter(it => it)
+        .map(it => it.trim())
+        .map(it => it.match(REGEX))
+        .filter(it => it)
+        .map(({groups: {id, name, src, docs}})
+            => ({id, name, src, docs})));
+  ```
+-->
 <body>
   <ul>
     <li><input type="text" name="script-name" /> <input type="button" value="inject" onclick="inject()"/></li>
-    <li><a href="#jquery" onclick="inject('https://unpkg.com/jquery')">Inject jQuery</a>&nbsp;<a href="https://api.jquery.com/">Docs</a></li>
-    <li><a href="#lodash" onclick="inject('https://unpkg.com/lodash')">Inject Lodash</a>&nbsp;<a href="https://lodash.com/docs/">Docs</a></li>
-    <li><a href="#ramda" onclick="inject('https://unpkg.com/ramda')">Inject Ramda</a>&nbsp;<a href="https://ramdajs.com/docs/">Docs</a></li>
-    <li><a href="#handlebars" onclick="inject('https://unpkg.com/handlebars@latest/dist/handlebars.js')">Inject Handlebars</a>&nbsp;<a href="https://handlebarsjs.com/guide/">Docs</a></li>
-    <li><a href="#angularjs" onclick="inject('https://unpkg.com/angular@latest/angular.js')">Inject AngularJS</a>&nbsp;<a href="https://docs.angularjs.org/api">Docs</a></li>
-    <li><a href="#zepto" onclick="inject('https://zeptojs.com/zepto.min.js')">Inject ZeptoJS</a>&nbsp;<a href="https://zeptojs.com/">Docs</a></li>
-    <li><a href="#underscore" onclick="inject('https://underscorejs.org/underscore-min.js')">Inject UnderscoreJS</a>&nbsp;<a href="https://underscorejs.org/">Docs</a></li>
-    <li><a href="#backbone" onclick="inject('https://backbonejs.org/backbone-min.js')">Inject BackboneJS</a>&nbsp;<a href="https://backbonejs.org/">Docs</a></li>
+    
+    <li><a href="#jquery" onclick="inject('https://unpkg.com/jquery', false)">Inject jQuery</a>&nbsp;<a href="https://api.jquery.com/">Docs</a></li>
+    <li><a href="#lodash" onclick="inject('https://unpkg.com/lodash', false)">Inject Lodash</a>&nbsp;<a href="https://lodash.com/docs/">Docs</a></li>
+    <li><a href="#ramda" onclick="inject('https://unpkg.com/ramda', false)">Inject Ramda</a>&nbsp;<a href="https://ramdajs.com/docs/">Docs</a></li>
+    <li><a href="#handlebars" onclick="inject('https://unpkg.com/handlebars@latest/dist/handlebars.js', false)">Inject Handlebars</a>&nbsp;<a href="https://handlebarsjs.com/guide/">Docs</a></li>
+    <li><a href="#angularjs" onclick="inject('https://unpkg.com/angular@latest/angular.js', false)">Inject AngularJS</a>&nbsp;<a href="https://docs.angularjs.org/api">Docs</a></li>
+    <li><a href="#zepto" onclick="inject('https://zeptojs.com/zepto.min.js', false)">Inject ZeptoJS</a>&nbsp;<a href="https://zeptojs.com/">Docs</a></li>
+    <li><a href="#underscore" onclick="inject('https://underscorejs.org/underscore-min.js', false)">Inject UnderscoreJS</a>&nbsp;<a href="https://underscorejs.org/">Docs</a></li>
+    <li><a href="#backbone" onclick="inject('https://backbonejs.org/backbone-min.js', false)">Inject BackboneJS</a>&nbsp;<a href="https://backbonejs.org/">Docs</a></li>
     <li><a href="#react" onclick="inject('https://unpkg.com/react@latest/umd/react.development.js', true)">Inject ReactJS</a>&nbsp;<a href="https://reactjs.org/docs/">Docs</a></li>
-    <li><a href="#vue" onclick="inject('https://unpkg.com/vue@2')">Inject Vue</a>&nbsp;<a href="https://v2.vuejs.org/v2/guide/">Docs</a></li>
-    <li><a href="#vue3" onclick="inject('https://unpkg.com/vue@3')">Inject Vue 3</a>&nbsp;<a href="https://vuejs.org/guide/introduction.html">Docs</a></li>
+    <li><a href="#vue" onclick="inject('https://unpkg.com/vue@2', false)">Inject Vue</a>&nbsp;<a href="https://v2.vuejs.org/v2/guide/">Docs</a></li>
+    <li><a href="#vue3" onclick="inject('https://unpkg.com/vue@3', false)">Inject Vue 3</a>&nbsp;<a href="https://vuejs.org/guide/introduction.html">Docs</a></li>
+    <li><a href="#rxjs" onclick="inject('https://unpkg.com/rxjs', false)">Inject RxJS</a>&nbsp;<a href="https://rxjs.dev/api">Docs</a></li>
+    <li><a href="#mobxjs" onclick="inject('https://unpkg.com/mobx/dist/mobx.umd.production.min.js', false)">Inject MobX</a>&nbsp;<a href="https://mobx.js.org/">Docs</a></li>
   </ul>
 
   <canvas id="davinci" width="800" height="600"></canvas>
