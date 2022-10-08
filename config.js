@@ -60,7 +60,7 @@ module.exports = {
       id: "react",
       name: "ReactJS",
       src: "https://unpkg.com/react@latest/umd/react.development.js",
-      docs: "https://reactjs.org/docs/",
+      docs: "https://reactjs.org/docs/getting-started.html",
       crossorigin: true,
     },
     {
