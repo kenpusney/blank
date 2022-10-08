@@ -6,6 +6,6 @@ const config = require("./config")
 
 
 ejs.renderFile("index.ejs.html", config, (err, result) => {
-    fs.mkdirSync("public")
+    fs.mkdirSync("public", { recursive: true })
     fs.writeFileSync("public/index.html", result)
 })
