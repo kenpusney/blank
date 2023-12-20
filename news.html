@@ -1,0 +1,101 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>News</title>
+</head>
+<body>
+  <select id="column-selection">
+    <option value="">请选择</option>
+    <option value="TOPC1453100395512779">正点财经</option>
+    <option value="TOPC1451528971114112">新闻联播</option>
+    <option value="TOPC1451464665008914">今日说法</option>
+    <option value="TOPC1451559129520755">新闻直播间</option>
+  </select>
+
+  <ul id="news-list"></ul>
+
+  <script>
+    function to_date(date) {
+        const zero_padding = (num) => {
+            if (num >= 10) {
+                return `${num}`
+            }
+            return `0${num}`
+        }
+
+        let year = `${date.getFullYear()}`;
+        let month = zero_padding(date.getMonth() + 1);
+        let day = zero_padding(date.getDate());
+
+        return `${year}${month}${day}`;
+    }
+
+    window.globals = {
+      page: 1,
+      total: -1,
+      result: [],
+      columnId: "",
+      size: 100,
+      date: to_date(new Date())
+    }
+
+    function load({columnId, size, page, date}) {
+      var script = document.createElement("script")
+      script.src = `https://api.cntv.cn/NewVideo/getVideoListByColumn?id=${columnId}&n=${size}&sort=desc&p=${page}&bd=${date}&mode=2&serviceId=tvcctv&cb=cb`
+      document.body.appendChild(script)
+    }
+
+    function cb({data: {total, list}}) {
+      let {columnId, size, page} = window.globals
+      if (list.length || page * size < total) {
+        window.globals.result.push(...list)
+        window.globals.page += 1;
+        load(window.globals)
+      } else {
+        display(window.globals);
+      }
+      console.log(page)
+    }
+
+
+    function display({columnId, result}) {
+      let news_list = document.querySelector("#news-list");
+      while(news_list.firstChild) {
+        news_list.removeChild(news_list.firstChild)
+      }
+      for (let elem of result.toReversed()) {
+        let { url, title } = elem;
+        let list_item = document.createElement("li")
+        let anchor = document.createElement("a");
+        anchor.href = url
+        anchor.innerText = title
+        list_item.appendChild(anchor);
+        news_list.appendChild(list_item);
+      }
+    }
+
+    document.addEventListener("DOMContentLoaded", (domEvent) => {
+      document.querySelector("#column-selection").addEventListener("change", async (e) => {
+        let value = e.target.value
+        if (value) {
+          let columnId = value;
+          let page = 1;
+          let result = [];
+          let total = -1;
+          window.globals = {
+            ...globals,
+            columnId,
+            page,
+            result,
+            total,
+          };
+          load(window.globals)
+        } 
+      })
+    })
+
+  </script>
+</body>
+</html>
