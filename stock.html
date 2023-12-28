@@ -4,6 +4,7 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Stock</title>
+    <script src="https://cdn.bootcdn.net/ajax/libs/echarts/5.4.3/echarts.min.js"></script>
 </head>
 <body>
     <table border="0">
@@ -28,10 +29,13 @@
         </tr>
         <tr>
             <td></td>
-            <td><button id="calculate">计算</button>&nbsp;<button id="reset">重置</button></td>
+            <td><button id="calculate">计算</button></td>
         </tr>
     </table>
     <div id="result"></div>
+    <div id="chart_a" style="width: 600px;height:400px;"></div>
+    <div id="chart_b" style="width: 600px;height:400px;"></div>
+    <div id="chart_c" style="width: 600px;height:400px;"></div>
     <script>
         function tryGetValue(name, label) {
             const value = document.querySelector(`[name='${name}']`).value;
@@ -48,7 +52,72 @@
             }
         }
 
-        const reserve = (number) => (Math.round(number * 100) / 100).toFixed(2)
+        const reserve = (number) => (Math.round(number * 100) / 100).toFixed(2);
+
+        const calc = ({price, amount, marketRate, commissionRate, taxRate}) => {
+            const totalPrice = price * amount;
+            const commission = Math.max(5, totalPrice * commissionRate / 1000);
+            const transferFee = totalPrice * marketRate / 1000;
+            const tax = totalPrice * taxRate / 1000;
+            const buyInCost = commission + transferFee;
+            const saleOutCost = commission + transferFee + tax;
+            return ({
+                totalPrice,
+                commission,
+                transferFee,
+                tax,
+                buyInCost,
+                saleOutCost
+            })
+        }
+
+        const calcSaleBy = (params, increase) => {
+            const {price} = params
+            const {totalPrice, buyInCost} = calc(params);
+            const {totalPrice: saleTotalPrice, saleOutCost} = calc({
+                ...params,
+                price: price + increase
+            });
+            console.log({
+                totalPrice, buyInCost, saleTotalPrice, saleOutCost
+            })
+
+            return parseFloat(reserve(saleTotalPrice - saleOutCost - (totalPrice + buyInCost)));
+        }
+
+        function plot(increases, chartElemSelector, params) {
+            const incomes = increases.map(increase => calcSaleBy(params, increase));
+
+            const chartElem = document.querySelector(chartElemSelector);
+            const chart = echarts.init(chartElem);
+            chart.setOption({
+                tooltip: {
+                    trigger: 'none',
+                        axisPointer: {
+                        type: 'cross'
+                    }
+                },
+                xAxis: {
+                    type: 'category',
+                    name: '卖出加价',
+                    data: increases
+                },
+                yAxis: {
+                    type: 'value',
+                    name: '净获利',
+                },
+                series: [
+                    {
+                        data: incomes,
+                        type: 'line',
+                        smooth: true,
+                        label: {
+                            show: true,
+                        }
+                    }
+                ]
+            })
+        }
 
         function calculateFees() {
             const price = tryGetValue("price", "股价");
@@ -56,13 +125,18 @@
             const marketRate = tryGetValue("market", "市场");
             const commissionRate = tryGetValue("commission_rate", "佣金费率");
             const taxRate = 0.5;
+            
+            const params = {price, amount, marketRate, commissionRate, taxRate};
 
-            const totalPrice = price * amount;
-            const commission = Math.max(5, totalPrice * commissionRate / 1000);
-            const transferFee = totalPrice * marketRate / 1000;
-            const tax = totalPrice * taxRate / 1000;
-            const buyInCost = commission + transferFee;
-            const saleOutCost = commission + transferFee + tax;
+            const {
+                totalPrice,
+                commission,
+                transferFee,
+                tax,
+                buyInCost,
+                saleOutCost
+            } = calc(params);
+
             document.querySelector("#result").innerHTML = `
                 <dl>
                     <dt>成交价 Total</dt>
@@ -79,7 +153,10 @@
                     <dd>${reserve(totalPrice - saleOutCost)} (- ${reserve(saleOutCost)})</dd>
                 </dl>
             `
-        }   
+            plot([0.01, 0.02, 0.03, 0.04, 0.05], "#chart_a", params)
+            plot([0.1, 0.2, 0.3, 0.4, 0.5], "#chart_b", params)
+            plot([0.5, 1, 1.5, 2], "#chart_c", params)
+        }
 
         document.addEventListener("DOMContentLoaded", () => {
             document.querySelector("#calculate").addEventListener("click", calculateFees);
