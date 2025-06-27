@@ -1,0 +1,1733 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Interactive Fiction Map and Notes Tool</title>
+</head>
+<body>
+    <script type="module" src="https://jspm.dev/@babel/standalone"></script>
+    <script type="text/jsx" data-type="module">
+import React, { useState, useEffect, useRef, useCallback } from 'https://jspm.dev/npm:react@18.2.0';
+import { createRoot } from "https://jspm.dev/npm:react-dom@18.2.0/client";
+
+// Constants for canvas drawing and room layout
+const ROOM_WIDTH = 120;
+const ROOM_HEIGHT = 60;
+const ROOM_BORDER_RADIUS = 8;
+const FONT_SIZE = 16;
+const FONT_FAMILY = 'Inter, sans-serif';
+
+const GRID_SIZE = 20; // For snapping rooms to a grid
+const ANCHOR_SIZE = 8; // Size of the connection anchors
+const ANCHOR_COLOR = '#4B5563'; // Gray-600 for unselected anchors
+const ANCHOR_HIGHLIGHT_COLOR = '#C4B5FD'; // Purple-300 for selected room's anchors
+
+const UP_ARROW_COLOR = '#4CAF50'; // Green for 'Up' connections
+const DOWN_ARROW_COLOR = '#F44336'; // Red for 'Down' connections
+
+// Helper to snap a coordinate to the grid
+const snapToGrid = (coord) => Math.round(coord / GRID_SIZE) * GRID_SIZE;
+
+// Helper to get reciprocal direction
+const getReciprocalDirection = (direction) => {
+    switch (direction.toLowerCase()) {
+        case 'north': return 'South';
+        case 'east': return 'West';
+        case 'south': return 'North';
+        case 'west': return 'East';
+        case 'northeast': return 'Southwest';
+        case 'northwest': return 'Southeast';
+        case 'southeast': return 'Northwest';
+        case 'southwest': return 'Northeast';
+        case 'up': return 'Down'; // Added for Z-axis
+        case 'down': return 'Up'; // Added for Z-axis
+        default: return '';
+    }
+};
+
+// Main App Component
+const App = () => {
+    // Rooms state, initialized from localStorage or empty array
+    const [rooms, setRooms] = useState(() => {
+        try {
+            const savedRooms = localStorage.getItem('if-map-rooms');
+            const parsedRooms = savedRooms ? JSON.parse(savedRooms) : [];
+
+            // Ensure rooms have x, y, z coordinates; assign defaults if missing
+            return parsedRooms.map(room => ({
+                ...room,
+                x: room.x !== undefined ? room.x : snapToGrid(300),
+                y: room.y !== undefined ? room.y : snapToGrid(200),
+                z: room.z !== undefined ? room.z : 0, // Default Z-layer to 0
+            })).sort((a, b) => a.name.localeCompare(b.name));
+        } catch (error) {
+            console.error("Error parsing saved rooms from localStorage:", error);
+            return []; // Return empty on parse error, let useEffect handle initial room
+        }
+    });
+    const [selectedRoomId, setSelectedRoomId] = useState(null); // Room highlighted on map
+    const [editingRoomId, setEditingRoomId] = useState(null);   // Room whose modal is open
+    const [showDeleteModal, setShowDeleteModal] = useState(false);
+    const [roomToDelete, setRoomToDelete] = useState(null);
+    const [message, setMessage] = useState(''); // For user feedback
+    const [showHelpModal, setShowHelpModal] = useState(false); // State for help modal
+
+    // Canvas offsets for panning
+    const [canvasOffsetX, setCanvasOffsetX] = useState(0);
+    const [canvasOffsetY, setCanvasOffsetY] = useState(0);
+
+    // Current Z-layer being viewed
+    const [currentLayer, setCurrentLayer] = useState(0);
+
+    // Ref to track if any input field (including within modal) is currently focused
+    const inputFocusRef = useRef(false);
+
+    // Effect to create initial "Start" room and select it if map is empty on first load
+    useEffect(() => {
+        if (rooms.length === 0) {
+            const startRoom = {
+                id: crypto.randomUUID(),
+                name: 'Start',
+                notes: 'This is your starting location. Single click to select, double click to edit. Use H,J,K,L (W,S,N,E) or Y,U,B,N (NW,NE,SW,SE) to add connected rooms on the same layer. Use Shift + > for UP, Shift + < for DOWN. Use WASD or Arrow Keys to pan the map. Use Shift + Arrow Keys to navigate between rooms. Page Up/Page Down to change layers.',
+                exits: [],
+                x: snapToGrid(300),
+                y: snapToGrid(200),
+                z: 0,
+            };
+            setRooms([startRoom]);
+            setSelectedRoomId(startRoom.id); // Select the first room
+            showMessage("Welcome! Your first room 'Start' has been created. Single click to select, double click to edit.");
+        }
+    }, [rooms]); // Depend on rooms to ensure it runs only if rooms is initially empty
+
+    // Update selected room if editingRoomId changes (to keep highlight consistent)
+    useEffect(() => {
+        if (editingRoomId && selectedRoomId !== editingRoomId) {
+            setSelectedRoomId(editingRoomId);
+        }
+    }, [editingRoomId, selectedRoomId]);
+
+    // Update selectedRoomId and editingRoomId if their respective rooms were deleted
+    useEffect(() => {
+        if (selectedRoomId && !rooms.find(room => room.id === selectedRoomId)) {
+            setSelectedRoomId(null);
+        }
+        if (editingRoomId && !rooms.find(room => room.id === editingRoomId)) {
+            setEditingRoomId(null);
+        }
+    }, [rooms, selectedRoomId, editingRoomId]);
+
+    // Function to show temporary messages
+    const showMessage = (msg, duration = 3000) => {
+        setMessage(msg);
+        setTimeout(() => setMessage(''), duration);
+    };
+
+    // Callback to update an existing room (notes or exits from RoomDetailsModal)
+    const handleUpdateRoom = useCallback((roomId, updatedData) => {
+        setRooms(prevRooms => prevRooms.map(room =>
+            room.id === roomId ? { ...room, ...updatedData } : room
+        ).sort((a, b) => a.name.localeCompare(b.name)));
+    }, []);
+
+    // Callback to update a room's position (from MapCanvas)
+    const handleRoomPositionUpdate = useCallback((roomId, newX, newY) => {
+        setRooms(prevRooms => prevRooms.map(room =>
+            room.id === roomId ? { ...room, x: snapToGrid(newX), y: snapToGrid(newY) } : room
+        ));
+    }, []);
+
+    // Prepare to delete a room (show modal)
+    const confirmDeleteRoom = (room) => {
+        setRoomToDelete(room);
+        setShowDeleteModal(true);
+    };
+
+    // Delete a room and its associated connections
+    const handleDeleteRoom = () => {
+        if (!roomToDelete) return;
+
+        const deletedRoomId = roomToDelete.id;
+        const originalDeletedRoom = rooms.find(r => r.id === deletedRoomId); // Store original room for nearest calculation
+
+        setRooms(prevRooms => {
+            let updatedRooms = prevRooms.filter(room => room.id !== deletedRoomId);
+
+            // Remove all exits that point to the deleted room
+            updatedRooms = updatedRooms.map(room => ({
+                ...room,
+                exits: room.exits.filter(exit => exit.targetRoomId !== deletedRoomId)
+            }));
+
+            // Logic to select nearest room after deletion
+            if (selectedRoomId === deletedRoomId) {
+                let newSelectedRoom = null;
+                const remainingRooms = updatedRooms;
+
+                if (remainingRooms.length > 0) {
+                    // 1. Try to find nearest on the *current* layer
+                    const roomsOnCurrentLayer = remainingRooms.filter(r => r.z === currentLayer);
+                    if (roomsOnCurrentLayer.length > 0 && originalDeletedRoom) {
+                        let minDistance = Infinity;
+                        roomsOnCurrentLayer.forEach(room => {
+                            const distance = Math.sqrt(
+                                Math.pow(room.x - originalDeletedRoom.x, 2) +
+                                Math.pow(room.y - originalDeletedRoom.y, 2)
+                            );
+                            if (distance < minDistance) {
+                                minDistance = distance;
+                                newSelectedRoom = room;
+                            }
+                        });
+                    }
+
+                    // 2. If no room found on current layer, find nearest on *any* layer
+                    // Consider a Z-distance penalty to prioritize current layer, but allow cross-layer if very close
+                    if (!newSelectedRoom && originalDeletedRoom) {
+                        let minDistance = Infinity;
+                        remainingRooms.forEach(room => {
+                            const zPenalty = Math.abs(room.z - originalDeletedRoom.z) * 100; // Penalize cross-layer distance
+                            const distance = Math.sqrt(
+                                Math.pow(room.x - originalDeletedRoom.x, 2) +
+                                Math.pow(room.y - originalDeletedRoom.y, 2)
+                            ) + zPenalty;
+                            if (distance < minDistance) {
+                                minDistance = distance;
+                                newSelectedRoom = room;
+                            }
+                        });
+                        // If the nearest is on a different layer, switch to that layer
+                        if (newSelectedRoom && newSelectedRoom.z !== currentLayer) {
+                            setCurrentLayer(newSelectedRoom.z);
+                        }
+                    }
+
+                    // 3. Fallback: If still no room (e.g., deleted room was the only one on current layer), pick first alphabetically from all remaining rooms
+                    if (!newSelectedRoom && remainingRooms.length > 0) {
+                        newSelectedRoom = remainingRooms[0]; // Already sorted alphabetically
+                        if (newSelectedRoom.z !== currentLayer) {
+                            setCurrentLayer(newSelectedRoom.z);
+                        }
+                    }
+                }
+
+                if (newSelectedRoom) {
+                    setSelectedRoomId(newSelectedRoom.id);
+                    showMessage(`Room "${roomToDelete.name}" deleted. Selected nearest room: "${newSelectedRoom.name}"!`);
+                } else {
+                    setSelectedRoomId(null);
+                    showMessage(`Room "${roomToDelete.name}" deleted. No other rooms left.`);
+                }
+            } else {
+                 showMessage(`Room "${roomToDelete.name}" deleted successfully!`);
+            }
+            return updatedRooms;
+        });
+
+        setRoomToDelete(null);
+        setShowDeleteModal(false);
+    };
+
+    // Export rooms data as JSON
+    const handleExport = () => {
+        const dataStr = JSON.stringify(rooms, null, 2); // Pretty print JSON
+        const blob = new Blob([dataStr], { type: 'application/json' });
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = 'if_map_data.json';
+        document.body.appendChild(a);
+        a.click();
+        document.body.removeChild(a);
+        URL.revokeObjectURL(url);
+        showMessage("Map data exported as if_map_data.json!");
+    };
+
+    // Import rooms data from JSON file
+    const handleImport = (event) => {
+        const file = event.target.files[0];
+        if (!file) {
+            return;
+        }
+
+        const reader = new FileReader();
+        reader.onload = (e) => {
+            try {
+                const importedData = JSON.parse(e.target.result);
+                // Basic validation for imported data structure
+                if (Array.isArray(importedData) && importedData.every(item =>
+                    typeof item.id === 'string' &&
+                    typeof item.name === 'string' &&
+                    typeof item.notes === 'string' &&
+                    (item.x === undefined || typeof item.x === 'number') &&
+                    (item.y === undefined || typeof item.y === 'number') &&
+                    (item.z === undefined || typeof item.z === 'number') && // Validate Z
+                    Array.isArray(item.exits) &&
+                    item.exits.every(exit => typeof exit.direction === 'string' && typeof exit.targetRoomId === 'string')
+                )) {
+                    // Ensure all imported rooms have x, y, z coordinates
+                    const processedData = importedData.map(room => ({
+                        ...room,
+                        x: room.x !== undefined ? snapToGrid(room.x) : snapToGrid(Math.random() * 500 + 50),
+                        y: room.y !== undefined ? snapToGrid(room.y) : snapToGrid(Math.random() * 300 + 50),
+                        z: room.z !== undefined ? room.z : 0, // Ensure Z is set
+                    })).sort((a, b) => a.name.localeCompare(b.name)); // Sort imported data
+
+                    setRooms(processedData);
+                    setSelectedRoomId(null); // Reset selection initially
+                    setEditingRoomId(null); // Close any open modal after import
+
+                    // After import, select the first room on the lowest existing layer
+                    const allZLayers = [...new Set(processedData.map(room => room.z))].sort((a, b) => a - b);
+                    let targetLayer = 0; // Default to 0
+
+                    if (allZLayers.length > 0) {
+                        targetLayer = allZLayers[0]; // Set to the lowest existing layer
+                        setCurrentLayer(targetLayer);
+                        const roomsOnTargetLayer = processedData.filter(room => room.z === targetLayer).sort((a, b) => a.name.localeCompare(b.name));
+                        if (roomsOnTargetLayer.length > 0) {
+                            setSelectedRoomId(roomsOnTargetLayer[0].id);
+                            showMessage(`Map data imported successfully! Moved to Layer: ${targetLayer}. Selected: ${roomsOnTargetLayer[0].name}`);
+                        } else {
+                            showMessage(`Map data imported successfully! Moved to Layer: ${targetLayer}. No rooms to select.`);
+                        }
+                    } else {
+                        showMessage("Map data imported successfully! No rooms found in the imported data.");
+                    }
+
+                } else {
+                    showMessage("Invalid JSON file format. Please ensure it contains an array of room objects with 'id', 'name', 'notes', and 'exits' (array of 'direction' and 'targetRoomId'). 'x', 'y', and 'z' properties are optional but recommended.");
+                }
+            } catch (error) {
+                console.error("Error parsing imported JSON:", error);
+                showMessage("Failed to import data. Please ensure it's a valid JSON file.");
+            }
+        };
+        reader.readAsText(file);
+    };
+
+    // Handle shortcut for creating new rooms
+    const handleShortcutNewRoom = useCallback((direction) => {
+        if (!selectedRoomId) {
+            showMessage("Select a room on the map first to create a connected room via shortcut.");
+            return;
+        }
+
+        const sourceRoom = rooms.find(r => r.id === selectedRoomId);
+        if (!sourceRoom) return;
+
+        let newRoomX = sourceRoom.x;
+        let newRoomY = sourceRoom.y;
+        let newRoomZ = sourceRoom.z; // New: Z-coordinate
+        let exitDirection = '';
+        let reciprocalDirection = '';
+        let defaultNewRoomName = '';
+
+        // Calculate position and reciprocal direction
+        const spacingX = ROOM_WIDTH * 1.5; // Space between rooms
+        const spacingY = ROOM_HEIGHT * 1.5;
+
+        switch (direction) {
+            case 'n':
+                newRoomY = sourceRoom.y - spacingY;
+                exitDirection = 'North';
+                reciprocalDirection = 'South';
+                defaultNewRoomName = `North of ${sourceRoom.name}`;
+                break;
+            case 'e':
+                newRoomX = sourceRoom.x + spacingX;
+                exitDirection = 'East';
+                reciprocalDirection = 'West';
+                defaultNewRoomName = `East of ${sourceRoom.name}`;
+                break;
+            case 's':
+                newRoomY = sourceRoom.y + spacingY;
+                exitDirection = 'South';
+                reciprocalDirection = 'North';
+                defaultNewRoomName = `South of ${sourceRoom.name}`;
+                break;
+            case 'w':
+                newRoomX = sourceRoom.x - spacingX;
+                exitDirection = 'West';
+                reciprocalDirection = 'East';
+                defaultNewRoomName = `West of ${sourceRoom.name}`;
+                break;
+            case 'nw':
+                newRoomX = sourceRoom.x - spacingX;
+                newRoomY = sourceRoom.y - spacingY;
+                exitDirection = 'Northwest';
+                reciprocalDirection = 'Southeast';
+                defaultNewRoomName = `Northwest of ${sourceRoom.name}`;
+                break;
+            case 'ne':
+                newRoomX = sourceRoom.x + spacingX;
+                newRoomY = sourceRoom.y - spacingY;
+                exitDirection = 'Northeast';
+                reciprocalDirection = 'Southwest';
+                defaultNewRoomName = `Northeast of ${sourceRoom.name}`;
+                break;
+            case 'sw':
+                newRoomX = sourceRoom.x - spacingX;
+                newRoomY = sourceRoom.y + spacingY;
+                exitDirection = 'Southwest';
+                reciprocalDirection = 'Northeast';
+                defaultNewRoomName = `Southwest of ${sourceRoom.name}`;
+                break;
+            case 'se':
+                newRoomX = sourceRoom.x + spacingX;
+                newRoomY = sourceRoom.y + spacingY;
+                exitDirection = 'Southeast';
+                reciprocalDirection = 'Northwest';
+                defaultNewRoomName = `Southeast of ${sourceRoom.name}`;
+                break;
+            case 'up': // New: Up
+                newRoomZ = sourceRoom.z + 1;
+                // Position above source room, but offset slightly to distinguish
+                newRoomX = sourceRoom.x; // Keep same X,Y for vertical stacking
+                newRoomY = sourceRoom.y;
+                exitDirection = 'Up';
+                reciprocalDirection = 'Down';
+                defaultNewRoomName = `Above ${sourceRoom.name}`;
+                break;
+            case 'down': // New: Down
+                newRoomZ = sourceRoom.z - 1;
+                // Position below source room, but offset slightly to distinguish
+                newRoomX = sourceRoom.x; // Keep same X,Y for vertical stacking
+                newRoomY = sourceRoom.y;
+                exitDirection = 'Down';
+                reciprocalDirection = 'Up';
+                defaultNewRoomName = `Below ${sourceRoom.name}`;
+                break;
+            default:
+                return; // Should not happen
+        }
+
+        // Check if an exit already exists in this direction from the source room
+        if (sourceRoom.exits.some(exit => exit.direction.toLowerCase() === exitDirection.toLowerCase())) {
+            showMessage(`An exit already exists to the ${exitDirection} from "${sourceRoom.name}".`);
+            return;
+        }
+
+        // Ensure new position is snapped to grid
+        newRoomX = snapToGrid(newRoomX);
+        newRoomY = snapToGrid(newRoomY);
+
+        const newRoom = {
+            id: crypto.randomUUID(),
+            name: defaultNewRoomName,
+            notes: '',
+            exits: [],
+            x: newRoomX,
+            y: newRoomY,
+            z: newRoomZ, // Assign the calculated Z
+        };
+
+        setRooms(prevRooms => {
+            const updatedRooms = [...prevRooms];
+            const sourceRoomIndex = updatedRooms.findIndex(r => r.id === sourceRoom.id);
+
+            // Add new room
+            updatedRooms.push(newRoom);
+
+            // Add exit from source to new room
+            if (sourceRoomIndex !== -1) {
+                const updatedSourceExits = [...updatedRooms[sourceRoomIndex].exits, { direction: exitDirection, targetRoomId: newRoom.id }];
+                updatedRooms[sourceRoomIndex] = { ...updatedRooms[sourceRoomIndex], exits: updatedSourceExits };
+            }
+
+            // Add reciprocal exit from new room to source room
+            newRoom.exits.push({ direction: reciprocalDirection, targetRoomId: sourceRoom.id });
+
+            // Sort rooms after adding new one (maintains consistent ordering for UI)
+            return updatedRooms.sort((a, b) => a.name.localeCompare(b.name));
+        });
+
+        setSelectedRoomId(newRoom.id); // Select the newly created room
+        // Automatically switch to the new room's layer if it's different
+        if (newRoomZ !== currentLayer) {
+            setCurrentLayer(newRoomZ);
+            showMessage(`Created "${newRoom.name}" on Layer ${newRoomZ} and connected it to "${sourceRoom.name}"!`);
+        } else {
+            showMessage(`Created "${newRoom.name}" and connected it to "${sourceRoom.name}"!`);
+        }
+    }, [rooms, selectedRoomId, showMessage, currentLayer]);
+
+    const navigateRooms = useCallback((direction) => {
+        // Filter rooms to only those on the current layer for navigation
+        const roomsOnCurrentLayer = rooms.filter(room => room.z === currentLayer);
+
+        if (roomsOnCurrentLayer.length === 0) {
+            showMessage("No rooms on this layer to navigate.");
+            return;
+        }
+
+        let currentRoom = selectedRoomId ? roomsOnCurrentLayer.find(r => r.id === selectedRoomId) : null;
+        if (!currentRoom) {
+            // If no room is selected, select the first one (alphabetically) on the current layer
+            const firstRoom = roomsOnCurrentLayer[0];
+            setSelectedRoomId(firstRoom.id);
+            showMessage(`Selected room: ${firstRoom.name}`);
+            return;
+        }
+
+        const currentRoomCenter = {
+            x: currentRoom.x + ROOM_WIDTH / 2,
+            y: currentRoom.y + ROOM_HEIGHT / 2
+        };
+
+        let targetRoom = null;
+        let minDistance = Infinity;
+
+        roomsOnCurrentLayer.forEach(room => {
+            if (room.id === currentRoom.id) return; // Don't consider the current room
+
+            const targetRoomCenter = {
+                x: room.x + ROOM_WIDTH / 2,
+                y: room.y + ROOM_HEIGHT / 2
+            };
+
+            const dx = targetRoomCenter.x - currentRoomCenter.x;
+            const dy = targetRoomCenter.y - currentRoomCenter.y;
+            const distance = Math.sqrt(dx * dx + dy * dy);
+
+            let isCandidate = false;
+            // Tolerance for horizontal/vertical alignment when navigating cardinal directions
+            const alignmentTolerance = 60; // Increased tolerance for better navigation
+
+            switch (direction) {
+                case 'n': // North (Up on map)
+                    if (dy < -10 && Math.abs(dx) < alignmentTolerance) { // dy must be significantly negative
+                        isCandidate = true;
+                    }
+                    break;
+                case 's': // South (Down on map)
+                    if (dy > 10 && Math.abs(dx) < alignmentTolerance) { // dy must be significantly positive
+                        isCandidate = true;
+                    }
+                    break;
+                case 'w': // West (Left on map)
+                    if (dx < -10 && Math.abs(dy) < alignmentTolerance) { // dx must be significantly negative
+                        isCandidate = true;
+                    }
+                    break;
+                case 'e': // East (Right on map)
+                    if (dx > 10 && Math.abs(dy) < alignmentTolerance) { // dx must be significantly positive
+                        isCandidate = true;
+                    }
+                    break;
+            }
+
+            // Prioritize candidates that are actually in the correct direction and closest
+            if (isCandidate && distance < minDistance) {
+                targetRoom = room;
+                minDistance = distance;
+            }
+        });
+
+        if (targetRoom) {
+            setSelectedRoomId(targetRoom.id);
+            showMessage(`Selected room: ${targetRoom.name}`);
+        } else {
+            showMessage(`No distinct room found to the ${direction} of "${currentRoom.name}" on Layer ${currentLayer}.`);
+        }
+    }, [rooms, selectedRoomId, currentLayer, showMessage]);
+
+
+    // Global keydown listener for shortcuts
+    useEffect(() => {
+        const handleKeyDown = (event) => {
+            // If any input field in the modal is focused, prevent global shortcuts
+            if (inputFocusRef.current) {
+                return;
+            }
+
+            const key = event.key.toLowerCase();
+            let handled = false; // Flag to prevent default
+
+            // Escape key to close all modals
+            if (key === 'escape') {
+                setShowHelpModal(false);
+                setShowDeleteModal(false);
+                setEditingRoomId(null);
+                handled = true;
+            }
+
+            // Toggle help modal with '?'
+            if (key === '?') {
+                setShowHelpModal(prev => !prev);
+                handled = true;
+            }
+
+            // New Room Creation Shortcuts (HJKL, YUBN, <, >)
+            if (!event.shiftKey) { // Cardinal/Diagonal (same layer)
+                const roomDirections = {
+                    'h': 'w', 'j': 's', 'k': 'n', 'l': 'e',
+                    'y': 'nw', 'u': 'ne', 'b': 'sw', 'n': 'se'
+                };
+                if (roomDirections[key]) {
+                    handleShortcutNewRoom(roomDirections[key]);
+                    handled = true;
+                }
+            } else { // Vertical (new layer) - Shift is pressed
+                // IMPORTANT FIX: Use '>' and '<' for key detection when Shift is pressed
+                if (key === '>') { // Shift + . for > (Up)
+                    handleShortcutNewRoom('up');
+                    handled = true;
+                } else if (key === '<') { // Shift + , for < (Down)
+                    handleShortcutNewRoom('down');
+                    handled = true;
+                }
+            }
+
+            // Map Scrolling (Panning) Shortcuts (WASD / Arrow Keys)
+            const panAmount = 50; // Pixels to scroll
+            if (!event.shiftKey) { // Panning only if Shift is NOT pressed (and not for vertical room creation keys)
+                if (key === 'w' || key === 'arrowup') {
+                    setCanvasOffsetY(prev => prev + panAmount); // Move canvas down to scroll map up
+                    handled = true;
+                } else if (key === 'a' || key === 'arrowleft') {
+                    setCanvasOffsetX(prev => prev + panAmount); // Move canvas right to scroll map left
+                    handled = true;
+                } else if (key === 's' || key === 'arrowdown') {
+                    setCanvasOffsetY(prev => prev - panAmount); // Move canvas up to scroll map down
+                    handled = true;
+                } else if (key === 'd' || key === 'arrowright') {
+                    setCanvasOffsetX(prev => prev - panAmount); // Move canvas left to scroll map right
+                    handled = true;
+                }
+            } else { // Room Navigation Shortcuts (Shift + WASD / Arrow Keys)
+                if (key === 'w' || key === 'arrowup') {
+                    navigateRooms('n');
+                    handled = true;
+                } else if (key === 'a' || key === 'arrowleft') {
+                    navigateRooms('w');
+                    handled = true;
+                } else if (key === 's' || key === 'arrowdown') {
+                    navigateRooms('s');
+                    handled = true;
+                } else if (key === 'd' || key === 'arrowright') {
+                    navigateRooms('e');
+                    handled = true;
+                }
+            }
+
+            // Layer Navigation (PageUp / PageDown)
+            if (key === 'pageup') {
+                const prevSelectedRoomId = selectedRoomId; // Store before layer change
+                const newLayer = currentLayer + 1;
+                setCurrentLayer(newLayer);
+                setSelectedRoomId(null); // Deselect immediately
+
+                // Find room on new layer after state update
+                setTimeout(() => { // Use setTimeout to ensure state (currentLayer) has updated
+                    let targetRoomOnNewLayer = null;
+                    const prevSelectedRoom = rooms.find(r => r.id === prevSelectedRoomId);
+
+                    if (prevSelectedRoom) {
+                        // 1. Check for direct 'Up' connection from previous room
+                        const upExit = prevSelectedRoom.exits.find(e => e.direction.toLowerCase() === 'up');
+                        if (upExit) {
+                            const connectedRoom = rooms.find(r => r.id === upExit.targetRoomId && r.z === newLayer);
+                            if (connectedRoom) {
+                                targetRoomOnNewLayer = connectedRoom;
+                            }
+                        }
+                    }
+
+                    // 2. If no direct connection, find nearest room on new layer
+                    if (!targetRoomOnNewLayer && prevSelectedRoom) {
+                        let minDistance = Infinity;
+                        rooms.filter(r => r.z === newLayer).forEach(room => {
+                            const distance = Math.sqrt(
+                                Math.pow(room.x - prevSelectedRoom.x, 2) +
+                                Math.pow(room.y - prevSelectedRoom.y, 2)
+                            );
+                            if (distance < minDistance) {
+                                minDistance = distance;
+                                targetRoomOnNewLayer = room;
+                            }
+                        });
+                    }
+
+                    // 3. If still no room, pick first alphabetically on new layer
+                    if (!targetRoomOnNewLayer) {
+                        const roomsOnNewLayer = rooms.filter(r => r.z === newLayer).sort((a, b) => a.name.localeCompare(b.name));
+                        if (roomsOnNewLayer.length > 0) {
+                            targetRoomOnNewLayer = roomsOnNewLayer[0];
+                        }
+                    }
+
+                    if (targetRoomOnNewLayer) {
+                        setSelectedRoomId(targetRoomOnNewLayer.id);
+                        showMessage(`Moved to Layer: ${newLayer}. Selected: ${targetRoomOnNewLayer.name}`);
+                    } else {
+                        showMessage(`Moved to Layer: ${newLayer}. No rooms to select.`);
+                    }
+                }, 0); // Small delay to allow state update to propagate
+                handled = true;
+            } else if (key === 'pagedown') {
+                const prevSelectedRoomId = selectedRoomId; // Store before layer change
+                const newLayer = currentLayer - 1;
+                setCurrentLayer(newLayer);
+                setSelectedRoomId(null); // Deselect immediately
+
+                // Find room on new layer after state update
+                setTimeout(() => {
+                    let targetRoomOnNewLayer = null;
+                    const prevSelectedRoom = rooms.find(r => r.id === prevSelectedRoomId);
+
+                    if (prevSelectedRoom) {
+                        // 1. Check for direct 'Down' connection from previous room
+                        const downExit = prevSelectedRoom.exits.find(e => e.direction.toLowerCase() === 'down');
+                        if (downExit) {
+                            const connectedRoom = rooms.find(r => r.id === downExit.targetRoomId && r.z === newLayer);
+                            if (connectedRoom) {
+                                targetRoomOnNewLayer = connectedRoom;
+                            }
+                        }
+                    }
+
+                    // 2. If no direct connection, find nearest room on new layer
+                    if (!targetRoomOnNewLayer && prevSelectedRoom) {
+                        let minDistance = Infinity;
+                        rooms.filter(r => r.z === newLayer).forEach(room => {
+                            const distance = Math.sqrt(
+                                Math.pow(room.x - prevSelectedRoom.x, 2) +
+                                Math.pow(room.y - prevSelectedRoom.y, 2)
+                            );
+                            if (distance < minDistance) {
+                                minDistance = distance;
+                                targetRoomOnNewLayer = room;
+                            }
+                        });
+                    }
+
+                    // 3. If still no room, pick first alphabetically on new layer
+                    if (!targetRoomOnNewLayer) {
+                        const roomsOnNewLayer = rooms.filter(r => r.z === newLayer).sort((a, b) => a.name.localeCompare(b.name));
+                        if (roomsOnNewLayer.length > 0) {
+                            targetRoomOnNewLayer = roomsOnNewLayer[0];
+                        }
+                    }
+
+                    if (targetRoomOnNewLayer) {
+                        setSelectedRoomId(targetRoomOnNewLayer.id);
+                        showMessage(`Moved to Layer: ${newLayer}. Selected: ${targetRoomOnNewLayer.name}`);
+                    } else {
+                        showMessage(`Moved to Layer: ${newLayer}. No rooms to select.`);
+                    }
+                }, 0); // Small delay to allow state update to propagate
+                handled = true;
+            }
+
+
+            // Edit Details / Add Notes Shortcut (E / X / V)
+            if ((key === 'e' || key === 'x' || key === 'v') && selectedRoomId) {
+                setEditingRoomId(selectedRoomId);
+                handled = true;
+            }
+
+            // Delete Room Shortcut (Delete key)
+            if (key === 'delete' && selectedRoomId) {
+                const roomToDeleteOnKey = rooms.find(r => r.id === selectedRoomId);
+                if (roomToDeleteOnKey) {
+                    confirmDeleteRoom(roomToDeleteOnKey);
+                }
+                handled = true;
+            }
+
+            if (handled) {
+                event.preventDefault(); // Ensure default behavior is prevented for handled keys
+            }
+        };
+
+        document.addEventListener('keydown', handleKeyDown);
+        return () => {
+            document.removeEventListener('keydown', handleKeyDown);
+        };
+    }, [handleShortcutNewRoom, selectedRoomId, rooms, setCanvasOffsetX, setCanvasOffsetY, setEditingRoomId, confirmDeleteRoom, navigateRooms, currentLayer]);
+
+
+    const roomBeingEdited = rooms.find(room => room.id === editingRoomId);
+    const roomIsSelected = selectedRoomId !== null;
+    const selectedRoom = rooms.find(room => room.id === selectedRoomId);
+
+    return (
+        <div className="min-h-screen bg-gray-900 text-gray-100 font-inter flex flex-col p-4 space-y-4">
+            {/* Message Display */}
+            {message && (
+                <div className="fixed top-4 left-1/2 -translate-x-1/2 bg-blue-500 text-white px-4 py-2 rounded-lg shadow-lg z-50 animate-fade-in-down">
+                    {message}
+                </div>
+            )}
+
+            {/* Delete Confirmation Modal */}
+            {showDeleteModal && (
+                <DeleteConfirmationModal
+                    roomName={roomToDelete?.name}
+                    onConfirm={handleDeleteRoom}
+                    onCancel={() => { setShowDeleteModal(false); setRoomToDelete(null); }}
+                />
+            )}
+
+            {/* Help Modal */}
+            {showHelpModal && (
+                <HelpModal onClose={() => { setShowHelpModal(false); inputFocusRef.current = false; }} />
+            )}
+
+            {/* Header with Title and Import/Export */}
+            <div className="bg-gray-800 p-6 rounded-lg shadow-lg flex flex-col md:flex-row justify-between items-center space-y-4 md:space-y-0 md:space-x-4">
+                <h1 className="text-3xl font-bold text-blue-400 text-center md:text-left flex-grow">Interactive Fiction Mapper</h1>
+                <div className="flex justify-center space-x-2 w-full md:w-auto">
+                    {roomIsSelected && selectedRoom && (
+                        <button
+                            onClick={() => confirmDeleteRoom(selectedRoom)}
+                            className="bg-red-600 hover:bg-red-700 text-white font-semibold py-3 px-4 rounded-md shadow-md transform hover:scale-105 transition-all duration-200 focus:outline-none focus:ring-2 focus:ring-red-500 focus:ring-offset-2 focus:ring-offset-gray-800"
+                        >
+                            Delete Selected Room
+                        </button>
+                    )}
+                    <label htmlFor="import-file" className="flex-1 bg-purple-600 hover:bg-purple-700 text-white font-semibold py-3 px-4 rounded-md shadow-md text-center cursor-pointer transform hover:scale-105 transition-all duration-200 focus:outline-none focus:ring-2 focus:ring-purple-500 focus:ring-offset-2 focus:ring-offset-gray-800">
+                        Import Map
+                        <input
+                            id="import-file"
+                            type="file"
+                            accept=".json"
+                            onChange={handleImport}
+                            className="hidden"
+                        />
+                    </label>
+                    <button
+                        onClick={handleExport}
+                        className="flex-1 bg-teal-600 hover:bg-teal-700 text-white font-semibold py-3 px-4 rounded-md shadow-md transform hover:scale-105 transition-all duration-200 focus:outline-none focus:ring-2 focus:ring-teal-500 focus:ring-offset-2 focus:ring-offset-gray-800"
+                    >
+                        Export Map
+                    </button>
+                </div>
+            </div>
+
+            {/* Main Content Area for Map Canvas */}
+            <div className="flex-grow bg-gray-800 p-6 rounded-lg shadow-lg relative min-h-[600px] flex justify-center items-center">
+                <h2 className="absolute top-4 left-1/2 -translate-x-1/2 text-2xl font-semibold text-blue-300">
+                    Map View <span className="text-gray-400 text-lg"> (Layer: {currentLayer})</span>
+                </h2>
+                {rooms.length === 0 && (
+                    <p className="text-gray-400 text-xl text-center z-10">
+                        No rooms yet. A 'Start' room will be created automatically.
+                    </p>
+                )}
+                <div className="absolute inset-4 mt-12"> {/* Adjusted inset to make space for Map View title */}
+                    <MapCanvas
+                        rooms={rooms.filter(room => room.z === currentLayer)} // Filter rooms by current layer
+                        selectedRoomId={selectedRoomId}
+                        onSelectRoom={setSelectedRoomId}
+                        onEditRoom={setEditingRoomId}
+                        onUpdateRoomPosition={handleRoomPositionUpdate}
+                        onUpdateRoom={handleUpdateRoom} // Pass handleUpdateRoom for new connections
+                        showMessage={showMessage}
+                        canvasOffsetX={canvasOffsetX}
+                        setCanvasOffsetX={setCanvasOffsetX}
+                        canvasOffsetY={canvasOffsetY}
+                        setCanvasOffsetY={setCanvasOffsetY}
+                    />
+                </div>
+
+                {/* Help button overlay */}
+                <button
+                    onClick={() => setShowHelpModal(true)}
+                    className="absolute top-4 right-4 bg-blue-600 hover:bg-blue-700 text-white rounded-full p-3 shadow-md transform hover:scale-110 transition-all duration-200 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:ring-offset-2 focus:ring-offset-gray-800 z-30"
+                    title="Show Help / Shortcuts"
+                >
+                    <svg xmlns="http://www.w3.org/2000/svg" className="h-6 w-6" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M8.228 9.228a4.5 4.5 0 110 5.608M6.029 13.5H12" />
+                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M3 12a9 9 0 1118 0 9 9 0 01-18 0z" />
+                    </svg>
+                </button>
+
+                {roomBeingEdited && (
+                    <RoomDetailsModal
+                        room={roomBeingEdited}
+                        onUpdateRoom={handleUpdateRoom}
+                        onDeleteRoom={confirmDeleteRoom}
+                        allRooms={rooms}
+                        onClose={() => {
+                            // When closing, specifically set editingRoomId to null to close the modal
+                            setEditingRoomId(null);
+                            // Crucially, reset inputFocusRef after modal closes
+                            inputFocusRef.current = false;
+                        }}
+                        showMessage={showMessage}
+                        inputFocusRef={inputFocusRef}
+                    />
+                )}
+            </div>
+        </div>
+    );
+};
+
+// MapCanvas Component
+const MapCanvas = ({ rooms, selectedRoomId, onSelectRoom, onEditRoom, onUpdateRoomPosition, onUpdateRoom, showMessage, canvasOffsetX, setCanvasOffsetX, canvasOffsetY, setCanvasOffsetY }) => {
+    const canvasRef = useRef(null);
+    const [isDraggingRoom, setIsDraggingRoom] = useState(false);
+    const [isPanningCanvas, setIsPanningCanvas] = useState(false);
+    const [isDraggingConnection, setIsDraggingConnection] = useState(false);
+
+    const [draggedRoomId, setDraggedRoomId] = useState(null);
+    const [dragOffset, setDragOffset] = useState({ x: 0, y: 0 }); // Offset from mouse to room top-left
+
+    const [lastMousePos, setLastMousePos] = useState({ x: 0, y: 0 }); // For panning
+
+    // Connection drag state
+    const [connectionSourceRoomId, setConnectionSourceRoomId] = useState(null);
+    const [connectionSourceAnchorDirection, setConnectionSourceAnchorDirection] = useState('');
+    const [connectionCurrentMousePos, setConnectionCurrentMousePos] = useState({ x: 0, y: 0 });
+
+
+    // Helper to get anchor positions for a given room
+    const getAnchorPositions = useCallback((room) => {
+        const anchors = {};
+        const halfWidth = ROOM_WIDTH / 2;
+        const halfHeight = ROOM_HEIGHT / 2;
+
+        anchors.north = { x: room.x + halfWidth, y: room.y, direction: 'North' };
+        anchors.northeast = { x: room.x + ROOM_WIDTH, y: room.y, direction: 'Northeast' };
+        anchors.east = { x: room.x + ROOM_WIDTH, y: room.y + halfHeight, direction: 'East' };
+        anchors.southeast = { x: room.x + ROOM_WIDTH, y: room.y + ROOM_HEIGHT, direction: 'Southeast' };
+        anchors.south = { x: room.x + halfWidth, y: room.y + ROOM_HEIGHT, direction: 'South' };
+        anchors.southwest = { x: room.x, y: room.y + ROOM_HEIGHT, direction: 'Southwest' };
+        anchors.west = { x: room.x, y: room.y + halfHeight, direction: 'West' };
+        anchors.northwest = { x: room.x, y: room.y, direction: 'Northwest' };
+
+        return anchors;
+    }, []);
+
+    // Drawing function
+    const drawMap = useCallback(() => {
+        const canvas = canvasRef.current;
+        if (!canvas) return;
+        const ctx = canvas.getContext('2d');
+
+        // Set canvas dimensions to fill parent
+        canvas.width = canvas.offsetWidth;
+        canvas.height = canvas.offsetHeight;
+
+        ctx.clearRect(0, 0, canvas.width, canvas.height);
+
+        // Apply canvas pan transformation
+        ctx.save();
+        ctx.translate(canvasOffsetX, canvasOffsetY);
+
+        // Draw connections (exits)
+        ctx.strokeStyle = '#60A5FA'; // blue-400
+        ctx.lineWidth = 2;
+        ctx.setLineDash([5, 5]); // Dashed lines for exits
+
+        rooms.forEach(room => {
+            room.exits.forEach(exit => {
+                // Find target room among all rooms, not just current layer
+                const targetRoom = rooms.find(r => r.id === exit.targetRoomId);
+                // Only draw connections if both rooms are on the current displayed layer
+                if (targetRoom && targetRoom.z === room.z) {
+                    // Draw line from center of source room to center of target room
+                    const startX = room.x + ROOM_WIDTH / 2;
+                    const startY = room.y + ROOM_HEIGHT / 2;
+                    const endX = targetRoom.x + ROOM_WIDTH / 2;
+                    const endY = targetRoom.y + ROOM_HEIGHT / 2;
+
+                    ctx.beginPath();
+                    ctx.moveTo(startX, startY);
+                    ctx.lineTo(endX, endY);
+                    ctx.stroke();
+
+                    // Draw an arrow head
+                    const angle = Math.atan2(endY - startY, endX - startX);
+                    const arrowSize = 10;
+                    ctx.save();
+                    ctx.translate(endX, endY);
+                    ctx.rotate(angle);
+                    ctx.beginPath();
+                    ctx.moveTo(0, 0);
+                    ctx.lineTo(-arrowSize, arrowSize / 2);
+                    ctx.lineTo(-arrowSize, -arrowSize / 2);
+                    ctx.closePath();
+                    ctx.fill(); // Fill arrow with current fillStyle (which will be current room fill color)
+                    ctx.restore();
+                }
+            });
+        });
+
+        ctx.setLineDash([]); // Reset line dash
+
+        // Draw rooms
+        rooms.forEach(room => {
+            ctx.fillStyle = selectedRoomId === room.id ? '#3B82F6' : '#4B5563'; // blue-500 or gray-600
+            ctx.strokeStyle = selectedRoomId === room.id ? '#93C5FD' : '#6B7280'; // blue-300 or gray-500
+            ctx.lineWidth = 2;
+
+            // Draw rounded rectangle for room
+            ctx.beginPath();
+            ctx.moveTo(room.x + ROOM_BORDER_RADIUS, room.y);
+            ctx.lineTo(room.x + ROOM_WIDTH - ROOM_BORDER_RADIUS, room.y);
+            ctx.quadraticCurveTo(room.x + ROOM_WIDTH, room.y, room.x + ROOM_WIDTH, room.y + ROOM_BORDER_RADIUS);
+            ctx.lineTo(room.x + ROOM_WIDTH, room.y + ROOM_HEIGHT - ROOM_BORDER_RADIUS);
+            ctx.quadraticCurveTo(room.x + ROOM_WIDTH, room.y + ROOM_HEIGHT, room.x + ROOM_WIDTH - ROOM_BORDER_RADIUS, room.y + ROOM_HEIGHT);
+            ctx.lineTo(room.x + ROOM_BORDER_RADIUS, room.y + ROOM_HEIGHT);
+            ctx.quadraticCurveTo(room.x, room.y + ROOM_HEIGHT, room.x, room.y + ROOM_HEIGHT - ROOM_BORDER_RADIUS);
+            ctx.lineTo(room.x, room.y + ROOM_BORDER_RADIUS);
+            ctx.quadraticCurveTo(room.x, room.y, room.x + ROOM_BORDER_RADIUS, room.y);
+            ctx.closePath();
+            ctx.fill();
+            ctx.stroke();
+
+            // Draw room name
+            ctx.fillStyle = '#D1D5DB'; // gray-300
+            ctx.font = `${FONT_SIZE}px ${FONT_FAMILY}`;
+            ctx.textAlign = 'center';
+            ctx.textBaseline = 'middle';
+            ctx.fillText(room.name, room.x + ROOM_WIDTH / 2, room.y + ROOM_HEIGHT / 2);
+
+            // Draw anchors for ALL rooms
+            const anchors = getAnchorPositions(room);
+            ctx.strokeStyle = ANCHOR_HIGHLIGHT_COLOR; // Always use highlight color for stroke for visibility
+            ctx.lineWidth = 1;
+            for (const key in anchors) {
+                const anchor = anchors[key];
+                // Use a different fill color based on selection
+                ctx.fillStyle = selectedRoomId === room.id ? ANCHOR_HIGHLIGHT_COLOR : ANCHOR_COLOR;
+                ctx.beginPath();
+                ctx.arc(anchor.x, anchor.y, ANCHOR_SIZE / 2, 0, Math.PI * 2);
+                ctx.fill();
+                ctx.stroke();
+            }
+
+            // Draw Up/Down indicators
+            const hasUpExit = room.exits.some(exit => exit.direction.toLowerCase() === 'up');
+            const hasDownExit = room.exits.some(exit => exit.direction.toLowerCase() === 'down');
+
+            const indicatorSize = 8; // Size of the triangle indicator
+            const indicatorOffset = 15; // Offset from the center
+
+            // Up arrow
+            if (hasUpExit) {
+                ctx.fillStyle = UP_ARROW_COLOR;
+                ctx.beginPath();
+                ctx.moveTo(room.x + ROOM_WIDTH / 2, room.y + indicatorOffset); // Top-center
+                ctx.lineTo(room.x + ROOM_WIDTH / 2 - indicatorSize / 2, room.y + indicatorOffset + indicatorSize);
+                ctx.lineTo(room.x + ROOM_WIDTH / 2 + indicatorSize / 2, room.y + indicatorOffset + indicatorSize);
+                ctx.closePath();
+                ctx.fill();
+            }
+
+            // Down arrow
+            if (hasDownExit) {
+                ctx.fillStyle = DOWN_ARROW_COLOR;
+                ctx.beginPath();
+                ctx.moveTo(room.x + ROOM_WIDTH / 2, room.y + ROOM_HEIGHT - indicatorOffset); // Bottom-center
+                ctx.lineTo(room.x + ROOM_WIDTH / 2 - indicatorSize / 2, room.y + ROOM_HEIGHT - indicatorOffset - indicatorSize);
+                ctx.lineTo(room.x + ROOM_WIDTH / 2 + indicatorSize / 2, room.y + ROOM_HEIGHT - indicatorOffset - indicatorSize);
+                ctx.closePath();
+                ctx.fill();
+            }
+        });
+
+        // Draw temporary connection line if dragging connection
+        if (isDraggingConnection && connectionSourceRoomId) {
+            const sourceRoom = rooms.find(r => r.id === connectionSourceRoomId);
+            if (sourceRoom) {
+                const anchors = getAnchorPositions(sourceRoom);
+                const startAnchor = anchors[connectionSourceAnchorDirection.toLowerCase()];
+                if (startAnchor) {
+                    ctx.strokeStyle = ANCHOR_HIGHLIGHT_COLOR;
+                    ctx.lineWidth = 2;
+                    ctx.setLineDash([5, 2]);
+                    ctx.beginPath();
+                    ctx.moveTo(startAnchor.x, startAnchor.y);
+                    ctx.lineTo(connectionCurrentMousePos.x - canvasOffsetX, connectionCurrentMousePos.y - canvasOffsetY);
+                    ctx.stroke();
+                    ctx.setLineDash([]);
+                }
+            }
+        }
+
+        ctx.restore(); // Restore canvas context after translation
+    }, [rooms, selectedRoomId, canvasOffsetX, canvasOffsetY, isDraggingConnection, connectionSourceRoomId, connectionSourceAnchorDirection, connectionCurrentMousePos, getAnchorPositions]);
+
+    // Redraw on rooms, selectedRoomId, or canvas offsets change
+    useEffect(() => {
+        drawMap();
+    }, [rooms, selectedRoomId, canvasOffsetX, canvasOffsetY, isDraggingConnection, connectionCurrentMousePos, drawMap]);
+
+    // Redraw on window resize
+    useEffect(() => {
+        const handleResize = () => drawMap();
+        window.addEventListener('resize', handleResize);
+        return () => window.removeEventListener('resize', handleResize);
+    }, [drawMap]);
+
+    // Mouse event handlers for dragging rooms and panning canvas
+    const handleMouseDown = (e) => {
+        const canvas = canvasRef.current;
+        const rect = canvas.getBoundingClientRect();
+        const mouseX = e.clientX - rect.left;
+        const mouseY = e.clientY - rect.top;
+
+        // Convert mouse coordinates to world coordinates (accounting for pan)
+        const worldX = mouseX - canvasOffsetX;
+        const worldY = mouseY - canvasOffsetY;
+
+        // --- Check for Anchor Click (Connection Start) ---
+        // Iterate through all rooms to check for anchor clicks
+        for (let i = rooms.length - 1; i >= 0; i--) {
+            const room = rooms[i];
+            const anchors = getAnchorPositions(room);
+            for (const key in anchors) {
+                const anchor = anchors[key];
+                // Check if click is within anchor bounds
+                if (worldX >= anchor.x - ANCHOR_SIZE / 2 && worldX <= anchor.x + ANCHOR_SIZE / 2 &&
+                    worldY >= anchor.y - ANCHOR_SIZE / 2 && worldY <= anchor.y + ANCHOR_SIZE / 2) {
+                    
+                    setIsDraggingConnection(true);
+                    setConnectionSourceRoomId(room.id); // The room whose anchor was clicked
+                    setConnectionSourceAnchorDirection(anchor.direction);
+                    setConnectionCurrentMousePos({ x: mouseX, y: mouseY });
+                    onSelectRoom(room.id); // Select the room whose anchor was clicked
+                    // Prevent room drag/pan if anched an anchor is clicked
+                    setDraggedRoomId(null);
+                    setIsDraggingRoom(false);
+                    setIsPanningCanvas(false);
+                    return;
+                }
+            }
+        }
+
+        // --- Check if a room was clicked (Room Drag/Select) ---
+        for (let i = rooms.length - 1; i >= 0; i--) { // Iterate backwards to pick top-most room
+            const room = rooms[i];
+            if (worldX >= room.x && worldX <= room.x + ROOM_WIDTH &&
+                worldY >= room.y && worldY <= room.y + ROOM_HEIGHT) {
+                // Clicked on a room
+                setDraggedRoomId(room.id);
+                setIsDraggingRoom(true);
+                setDragOffset({ x: worldX - room.x, y: worldY - room.y });
+                onSelectRoom(room.id); // Single click: SELECT room
+                return; // Stop here, room drag takes precedence
+            }
+        }
+        // If no room was clicked, start panning the canvas
+        setIsPanningCanvas(true);
+        setLastMousePos({ x: mouseX, y: mouseY });
+        onSelectRoom(null); // Deselect any room when clicking background
+        onEditRoom(null); // Close modal if clicking outside rooms
+    };
+
+    const handleMouseMove = (e) => {
+        const canvas = canvasRef.current;
+        const rect = canvas.getBoundingClientRect();
+        const mouseX = e.clientX - rect.left;
+        const mouseY = e.clientY - rect.top;
+
+        if (isDraggingConnection) {
+            setConnectionCurrentMousePos({ x: mouseX, y: mouseY });
+        } else if (isDraggingRoom && draggedRoomId) {
+            let newX = mouseX - canvasOffsetX - dragOffset.x;
+            let newY = mouseY - canvasOffsetY - dragOffset.y;
+
+            // Update position for visual feedback during drag (don't commit to state yet for performance)
+            const room = rooms.find(r => r.id === draggedRoomId);
+            if (room) {
+                room.x = newX;
+                room.y = newY;
+                drawMap(); // Redraw immediately
+            }
+        } else if (isPanningCanvas) {
+            const dx = mouseX - lastMousePos.x;
+            const dy = mouseY - lastMousePos.y;
+            setCanvasOffsetX(prev => prev + dx);
+            setCanvasOffsetY(prev => prev + dy);
+            setLastMousePos({ x: mouseX, y: mouseY });
+            drawMap(); // Redraw immediately
+        }
+    };
+
+    const handleMouseUp = (e) => {
+        // Defensive check: ensure 'e' exists before trying to access its properties
+        if (!e) {
+            // If no event object, just reset all drag/pan states and return
+            setIsDraggingRoom(false);
+            setDraggedRoomId(null);
+            setIsPanningCanvas(false);
+            setIsDraggingConnection(false);
+            setConnectionSourceRoomId(null);
+            setConnectionSourceAnchorDirection('');
+            setConnectionCurrentMousePos({ x: 0, y: 0 });
+            return;
+        }
+
+        const canvas = canvasRef.current;
+        if (!canvas) { // Also check if canvas is available
+            setIsDraggingRoom(false);
+            setDraggedRoomId(null);
+            setIsPanningCanvas(false);
+            setIsDraggingConnection(false);
+            setConnectionSourceRoomId(null);
+            setConnectionSourceAnchorDirection('');
+            setConnectionCurrentMousePos({ x: 0, y: 0 });
+            return;
+        }
+
+        const rect = canvas.getBoundingClientRect();
+        const mouseX = e.clientX - rect.left; // Access clientX *after* 'e' and 'canvas' checks
+        const mouseY = e.clientY - rect.top;
+        const worldX = mouseX - canvasOffsetX;
+        const worldY = mouseY - canvasOffsetY;
+
+        if (isDraggingConnection && connectionSourceRoomId) {
+            const sourceRoom = rooms.find(r => r.id === connectionSourceRoomId);
+            let targetRoomFound = null;
+            let targetAnchorDirection = '';
+
+            if (sourceRoom) {
+                for (let i = rooms.length - 1; i >= 0; i--) {
+                    const targetRoom = rooms[i];
+                    if (targetRoom.id === connectionSourceRoomId) continue;
+
+                    const anchors = getAnchorPositions(targetRoom);
+                    for (const key in anchors) {
+                        const anchor = anchors[key];
+                        if (worldX >= anchor.x - ANCHOR_SIZE / 2 && worldX <= anchor.x + ANCHOR_SIZE / 2 &&
+                            worldY >= anchor.y - ANCHOR_SIZE / 2 && worldY <= anchor.y + ANCHOR_SIZE / 2) {
+                            targetRoomFound = targetRoom;
+                            targetAnchorDirection = anchor.direction;
+                            break;
+                        }
+                    }
+                    if (targetRoomFound) break;
+                }
+            }
+
+            if (sourceRoom && targetRoomFound) {
+                const existingExit = sourceRoom.exits.some(
+                    exit => exit.targetRoomId === targetRoomFound.id && exit.direction.toLowerCase() === connectionSourceAnchorDirection.toLowerCase()
+                );
+                if (!existingExit) {
+                    const updatedSourceExits = [...sourceRoom.exits, { direction: connectionSourceAnchorDirection, targetRoomId: targetRoomFound.id }];
+                    onUpdateRoom(sourceRoom.id, { exits: updatedSourceExits });
+
+                    const reciprocalDir = getReciprocalDirection(connectionSourceAnchorDirection);
+                    const existingReciprocalExit = targetRoomFound.exits.some(
+                        exit => exit.targetRoomId === room.id && exit.direction.toLowerCase() === reciprocalDir.toLowerCase()
+                    );
+                    if (!existingReciprocalExit) {
+                        const updatedTargetExits = [...targetRoomFound.exits, { direction: reciprocalDir, targetRoomId: room.id }];
+                        onUpdateRoom(targetRoomFound.id, { exits: updatedTargetExits });
+                    }
+                    showMessage(`Connected "${sourceRoom.name}" (${connectionSourceAnchorDirection}) to "${targetRoomFound.name}"!`);
+                } else {
+                    showMessage(`Connection from "${sourceRoom.name}" to "${targetRoomFound.name}" in direction ${connectionSourceAnchorDirection} already exists.`);
+                }
+            } else {
+                showMessage("Connection cancelled or target not found.");
+            }
+        } else if (isDraggingRoom && draggedRoomId) {
+            const room = rooms.find(r => r.id === draggedRoomId);
+            if (room) {
+                onUpdateRoomPosition(room.id, room.x, room.y);
+            }
+        }
+        // Always reset these flags at the end
+        setIsDraggingRoom(false);
+        setDraggedRoomId(null);
+        setIsPanningCanvas(false);
+        setIsDraggingConnection(false);
+        setConnectionSourceRoomId(null);
+        setConnectionSourceAnchorDirection('');
+        setConnectionCurrentMousePos({ x: 0, y: 0 });
+    };
+
+    const handleMouseLeave = (e) => { // Pass the event object to handleMouseUp
+        handleMouseUp(e);
+    };
+
+    const handleDoubleClick = (e) => {
+        // Prevent double click during a drag/pan operation
+        if (isDraggingRoom || isPanningCanvas || isDraggingConnection) return;
+
+        const canvas = canvasRef.current;
+        const rect = canvas.getBoundingClientRect();
+        const mouseX = e.clientX - rect.left;
+        const mouseY = e.clientY - rect.top;
+
+        // Convert mouse coordinates to world coordinates (accounting for pan)
+        const worldX = mouseX - canvasOffsetX;
+        const worldY = mouseY - canvasOffsetY;
+
+        for (let i = rooms.length - 1; i >= 0; i--) {
+            const room = rooms[i];
+            if (worldX >= room.x && worldX <= room.x + ROOM_WIDTH &&
+                worldY >= room.y && worldY <= room.y + ROOM_HEIGHT) {
+                onSelectRoom(room.id); // Select and...
+                onEditRoom(room.id);   // ...Open modal
+                return;
+            }
+        }
+    };
+
+    return (
+        <canvas
+            ref={canvasRef}
+            className={`w-full h-full bg-gray-900 rounded-md border-2 border-gray-600 
+                ${isDraggingConnection ? 'cursor-crosshair' : (isPanningCanvas ? 'cursor-grabbing' : (isDraggingRoom ? 'cursor-grabbing' : 'cursor-grab'))}
+            `}
+            onMouseDown={handleMouseDown}
+            onMouseMove={handleMouseMove}
+            onMouseUp={handleMouseUp}
+            onMouseLeave={handleMouseLeave}
+            onDoubleClick={handleDoubleClick}
+        >
+            Your browser does not support the HTML canvas tag.
+        </canvas>
+    );
+};
+
+
+// RoomDetailsModal Component (replaces RoomEditor)
+const RoomDetailsModal = ({ room, onUpdateRoom, onDeleteRoom, allRooms, onClose, showMessage, inputFocusRef }) => {
+    const [name, setName] = useState(room.name);
+    const [notes, setNotes] = useState(room.notes);
+    const [exits, setExits] = useState(room.exits || []);
+    const [newExitDirection, setNewExitDirection] = useState('');
+    const [newExitTargetRoomId, setNewExitTargetRoomId] = useState('');
+
+    // Define all possible directions
+    const ALL_DIRECTIONS = [
+        'North', 'Northeast', 'East', 'Southeast',
+        'South', 'Southwest', 'West', 'Northwest',
+        'Up', 'Down'
+    ];
+
+    // Update internal state when room prop changes
+    useEffect(() => {
+        setName(room.name);
+        setNotes(room.notes);
+        setExits(room.exits || []);
+        setNewExitDirection('');
+        setNewExitTargetRoomId('');
+    }, [room]);
+
+    // Cleanup: Reset inputFocusRef when component unmounts
+    useEffect(() => {
+        return () => {
+            inputFocusRef.current = false;
+        };
+    }, [inputFocusRef]);
+
+    // Function to handle saving changes
+    const handleSave = () => {
+        // Validate name field
+        if (name.trim() === '') {
+            showMessage("Room name cannot be empty. Please enter a name.", 2000);
+            return; // Prevent saving if name is empty
+        }
+        // Always call onUpdateRoom with the current local state values
+        onUpdateRoom(room.id, { name: name.trim(), notes: notes });
+        showMessage("Room details saved!");
+    };
+
+    // Add a new exit
+    const handleAddExit = () => {
+        if (!newExitDirection.trim() || !newExitTargetRoomId) {
+            showMessage("Please provide both direction and target room for the exit.");
+            return;
+        }
+
+        // Check if an exit with this direction already exists (case-insensitive)
+        if (exits.some(exit => exit.direction.toLowerCase() === newExitDirection.trim().toLowerCase())) {
+            showMessage("An exit in this direction already exists for this room.");
+            return;
+        }
+
+        const updatedExits = [...exits, { direction: newExitDirection.trim(), targetRoomId: newExitTargetRoomId }];
+        onUpdateRoom(room.id, { exits: updatedExits });
+        setNewExitDirection('');
+        setNewExitTargetRoomId('');
+        showMessage("Exit added!");
+
+        // Also add reciprocal exit to the target room
+        const reciprocalDir = getReciprocalDirection(newExitDirection.trim());
+        const targetRoom = allRooms.find(r => r.id === newExitTargetRoomId);
+        if (targetRoom) {
+            const existingReciprocalExit = targetRoom.exits.some(
+                exit => exit.targetRoomId === room.id && exit.direction.toLowerCase() === reciprocalDir.toLowerCase()
+            );
+            if (!existingReciprocalExit) {
+                const updatedTargetExits = [...targetRoom.exits, { direction: reciprocalDir, targetRoomId: room.id }];
+                onUpdateRoom(targetRoom.id, { exits: updatedTargetExits });
+            }
+        }
+    };
+
+    // Remove an exit
+    const handleRemoveExit = (index) => {
+        const exitToRemove = exits[index];
+        const updatedExits = exits.filter((_, i) => i !== index);
+        onUpdateRoom(room.id, { exits: updatedExits });
+        showMessage("Exit removed!");
+
+        // Also remove reciprocal exit from the target room
+        const targetRoom = allRooms.find(r => r.id === exitToRemove.targetRoomId);
+        if (targetRoom) {
+            const reciprocalDir = getReciprocalDirection(exitToRemove.direction);
+            const updatedTargetExits = targetRoom.exits.filter(
+                exit => !(exit.targetRoomId === room.id && exit.direction.toLowerCase() === reciprocalDir.toLowerCase())
+            );
+            onUpdateRoom(targetRoom.id, { exits: updatedTargetExits });
+        }
+    };
+
+    // Filter out the current room from the list of available rooms for exits
+    const availableRoomsForExits = allRooms.filter(r => r.id !== room.id);
+
+    // Calculate available directions for the dropdown
+    const existingDirections = new Set(exits.map(exit => exit.direction.toLowerCase()));
+    const availableDirectionsForDropdown = ALL_DIRECTIONS.filter(dir => !existingDirections.has(dir.toLowerCase()));
+
+
+    // Handle keydown for the modal (e.g., Enter to save)
+    const handleKeyDownInModal = (e) => {
+        // Only trigger save on Enter if the target is an input field (e.g., room name, not a textarea or select)
+        if (e.key === 'Enter' && (e.target.tagName === 'INPUT' && e.target.type === 'text')) {
+            e.preventDefault(); // Prevent default form submission or newline
+            handleSave(); // Call save function
+            onClose(); // Close modal after save
+        }
+    };
+
+    return (
+        <div
+            className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 bg-gray-800 p-6 rounded-lg shadow-2xl z-20 max-w-lg w-full border border-blue-600 animate-fade-in"
+            onKeyDown={handleKeyDownInModal} // Add keydown listener to the modal div
+        >
+            <div className="flex justify-between items-center mb-4 border-b border-gray-700 pb-3">
+                <input
+                    type="text"
+                    value={name}
+                    onChange={(e) => setName(e.target.value)}
+                    onFocus={() => inputFocusRef.current = true}
+                    onBlur={() => inputFocusRef.current = false}
+                    className="text-2xl font-bold text-blue-400 bg-transparent border-none focus:outline-none focus:ring-0 w-full"
+                    autoFocus
+                />
+                <button
+                    onClick={() => { handleSave(); onClose(); }} // Save and close
+                    className="p-2 rounded-full bg-red-600 hover:bg-red-700 text-white transition-colors duration-200 focus:outline-none focus:ring-2 focus:ring-red-500"
+                    title="Close and Save"
+                >
+                    <svg xmlns="http://www.w3.org/2000/svg" className="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+                        </svg>
+                </button>
+            </div>
+
+            {/* Notes Section */}
+            <div className="mb-6">
+                <label htmlFor="notes" className="block text-lg font-semibold text-gray-200 mb-2">Notes:</label>
+                <textarea
+                    id="notes"
+                    value={notes}
+                    onChange={(e) => setNotes(e.target.value)}
+                    onFocus={() => inputFocusRef.current = true}
+                    onBlur={() => inputFocusRef.current = false}
+                    placeholder="Add detailed notes about this room..."
+                    rows="5"
+                    className="w-full p-3 bg-gray-900 text-gray-100 rounded-md border border-gray-700 resize-y focus:ring-2 focus:ring-blue-500 focus:border-transparent transition-all duration-200 custom-scrollbar"
+                />
+            </div>
+
+            {/* Exits Section */}
+            <div className="mb-6">
+                <h3 className="text-lg font-semibold text-gray-200 mb-3">Exits:</h3>
+                {exits.length === 0 ? (
+                    <p className="text-gray-400 mb-3">No exits defined yet.</p>
+                ) : (
+                    <ul className="space-y-2 mb-4 max-h-40 overflow-y-auto custom-scrollbar pr-2">
+                        {exits.map((exit, index) => {
+                            const targetRoom = allRooms.find(r => r.id === exit.targetRoomId);
+                            return (
+                                <li key={index} className="flex items-center justify-between bg-gray-700 rounded-md p-2 shadow-sm">
+                                    <span className="text-gray-200">{exit.direction} &rarr; <span className="font-medium text-blue-300">{targetRoom ? targetRoom.name : 'Unknown Room'}</span></span>
+                                    <button
+                                        onClick={() => handleRemoveExit(index)}
+                                        className="ml-4 p-1 rounded-full bg-red-500 hover:bg-red-600 text-white transition-all duration-200 focus:outline-none focus:ring-2 focus:ring-red-500 focus:ring-offset-2 focus:ring-offset-gray-700"
+                                        title="Remove Exit"
+                                    >
+                                        <svg xmlns="http://www.w3.org/2000/svg" className="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+                                        </svg>
+                                    </button>
+                                </li>
+                            );
+                        })}
+                    </ul>
+                )}
+
+                <div className="flex flex-col sm:flex-row sm:space-x-2 space-y-3 sm:space-y-0 mt-4">
+                    <select
+                        value={newExitDirection}
+                        onChange={(e) => setNewExitDirection(e.target.value)}
+                        onFocus={() => inputFocusRef.current = true}
+                        onBlur={() => inputFocusRef.current = false}
+                        className="flex-grow p-3 bg-gray-900 text-gray-100 rounded-md border border-gray-700 focus:ring-2 focus:ring-blue-500 focus:border-transparent transition-all duration-200 cursor-pointer"
+                    >
+                        <option value="">Select Direction</option>
+                        {availableDirectionsForDropdown.map(dir => (
+                            <option key={dir} value={dir}>{dir}</option>
+                        ))}
+                    </select>
+                    <select
+                        value={newExitTargetRoomId}
+                        onChange={(e) => setNewExitTargetRoomId(e.target.value)}
+                        onFocus={() => inputFocusRef.current = true}
+                        onBlur={() => inputFocusRef.current = false}
+                        className="flex-grow p-3 bg-gray-900 text-gray-100 rounded-md border border-gray-700 focus:ring-2 focus:ring-blue-500 focus:border-transparent transition-all duration-200 cursor-pointer"
+                    >
+                        <option value="">Select Target Room</option>
+                        {availableRoomsForExits.map(r => (
+                            <option key={r.id} value={r.id}>{r.name}</option>
+                        ))}
+                    </select>
+                    <button
+                        onClick={handleAddExit}
+                        className="bg-green-600 hover:bg-green-700 text-white font-semibold py-3 px-4 rounded-md shadow-md transform hover:scale-105 transition-all duration-200 focus:outline-none focus:ring-2 focus:ring-green-500 focus:ring-offset-2 focus:ring-offset-gray-700"
+                    >
+                        Add Exit
+                    </button>
+                </div>
+            </div>
+
+            {/* Save and Delete Room Buttons */}
+            <div className="flex justify-between pt-4 border-t border-gray-700">
+                <button
+                    onClick={handleSave}
+                    className="bg-blue-600 hover:bg-blue-700 text-white font-semibold py-2 px-4 rounded-md shadow-md transition-colors duration-200 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:ring-offset-2 focus:ring-offset-gray-800"
+                >
+                    Save Changes
+                </button>
+                <button
+                    onClick={() => onDeleteRoom(room)}
+                    className="bg-red-700 hover:bg-red-800 text-white font-semibold py-2 px-4 rounded-md shadow-md transition-colors duration-200 focus:outline-none focus:ring-2 focus:ring-red-500 focus:ring-offset-2 focus:ring-offset-gray-800"
+                >
+                    Delete This Room
+                </button>
+            </div>
+        </div>
+    );
+};
+
+// Delete Confirmation Modal Component
+const DeleteConfirmationModal = ({ roomName, onConfirm, onCancel }) => {
+    const modalRef = useRef(null);
+
+    useEffect(() => {
+        // Focus the modal div on mount so key events are captured
+        if (modalRef.current) {
+            modalRef.current.focus();
+        }
+    }, []);
+
+    const handleKeyDown = useCallback((e) => {
+        if (e.key === 'Enter') {
+            onConfirm();
+            e.preventDefault(); // Prevent default browser behavior (e.g., scrolling)
+        } else if (e.key === 'Escape') {
+            onCancel();
+            e.preventDefault();
+        }
+    }, [onConfirm, onCancel]);
+
+    return (
+        <div ref={modalRef} tabIndex="-1" className="fixed inset-0 bg-black bg-opacity-75 flex items-center justify-center z-50 p-4 outline-none" onKeyDown={handleKeyDown}>
+            <div className="bg-gray-800 rounded-lg p-8 shadow-xl max-w-md w-full border border-gray-700">
+                <h3 className="text-2xl font-bold text-red-400 mb-4">Confirm Deletion</h3>
+                <p className="text-gray-200 mb-6">Are you sure you want to delete the room "<span className="font-semibold text-orange-300">{roomName}</span>"? This action cannot be undone.</p>
+                <div className="flex justify-end space-x-4">
+                    <button
+                        onClick={onCancel}
+                        className="bg-gray-600 hover:bg-gray-700 text-white font-semibold py-2 px-4 rounded-md shadow-md transition-colors duration-200 focus:outline-none focus:ring-2 focus:ring-gray-500 focus:ring-offset-2 focus:ring-offset-gray-800"
+                    >
+                        Cancel
+                    </button>
+                    <button
+                        onClick={onConfirm}
+                        className="bg-red-700 hover:bg-red-800 text-white font-semibold py-2 px-4 rounded-md shadow-md transition-colors duration-200 focus:outline-none focus:ring-2 focus:ring-red-500 focus:ring-offset-2 focus:ring-offset-gray-800"
+                    >
+                        Delete
+                    </button>
+                </div>
+            </div>
+        </div>
+    );
+};
+
+// Help Modal Component
+const HelpModal = ({ onClose }) => {
+    return (
+        <div className="fixed inset-0 bg-black bg-opacity-75 flex items-center justify-center z-50 p-4"> {/* Centering styles */}
+            <div className="bg-gray-800 rounded-lg p-8 shadow-2xl max-w-2xl w-full border border-blue-600 animate-fade-in text-gray-100">
+                <div className="flex justify-between items-center mb-4 border-b border-gray-700 pb-3">
+                    <h3 className="text-2xl font-bold text-blue-400">Keyboard Shortcuts</h3>
+                    <button
+                        onClick={onClose}
+                        className="p-2 rounded-full bg-red-600 hover:bg-red-700 text-white transition-colors duration-200 focus:outline-none focus:ring-2 focus:ring-red-500"
+                        title="Close Help"
+                    >
+                        <svg xmlns="http://www.w3.org/2000/svg" className="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+                        </svg>
+                    </button>
+                </div>
+
+                <div className="space-y-4 text-lg max-h-96 overflow-y-auto custom-scrollbar pr-2">
+                    <div>
+                        <h4 className="font-semibold text-blue-300">General Actions:</h4>
+                        <ul className="list-disc list-inside ml-4 space-y-1">
+                            <li>`E` / `X` / `V` (while room selected): Open Room Details / Add Notes</li>
+                            <li>`Delete` (while room selected): Delete Selected Room (with confirmation)</li>
+                            <li>`?`: Open / Close this Help Modal</li>
+                            <li>`Escape`: Close any open modal (Help, Room Details, Delete Confirmation)</li>
+                            <li>Clicking background: Deselect room, close modal</li>
+                            <li>Double-click room: Select and open Room Details</li>
+                        </ul>
+                    </div>
+
+                    <div>
+                        <h4 className="font-semibold text-blue-300">Map Navigation (Panning):</h4>
+                        <ul className="list-disc list-inside ml-4 space-y-1">
+                            <li>`W` / `ArrowUp`: Pan Map Up</li>
+                            <li>`A` / `ArrowLeft`: Pan Map Left</li>
+                            <li>`S` / `ArrowDown`: Pan Map Down</li>
+                            <li>`D` / `ArrowRight`: Pan Map Right</li>
+                            <li>Drag background with mouse: Pan Map</li>
+                        </ul>
+                    </div>
+
+                    <div>
+                        <h4 className="font-semibold text-blue-300">Room Navigation (between rooms on *current* layer):</h4>
+                        <ul className="list-disc list-inside ml-4 space-y-1">
+                            <li>`Shift + W` / `Shift + ArrowUp`: Navigate North</li>
+                            <li>`Shift + A` / `Shift + ArrowLeft`: Navigate West</li>
+                            <li>`Shift + S` / `Shift + ArrowDown`: Navigate South</li>
+                            <li>`Shift + D` / `Shift + ArrowRight`: Navigate East</li>
+                        </ul>
+                    </div>
+
+                    <div>
+                        <h4 className="font-semibold text-blue-300">Room Creation & Connections (from selected room):</h4>
+                        <ul className="list-disc list-inside ml-4 space-y-1">
+                            <li>`K` or `N`: Create Room North</li>
+                            <li>`L` or `E`: Create Room East</li>
+                            <li>`J` or `S`: Create Room South</li>
+                            <li>`H` or `W`: Create Room West</li>
+                            <li>`U` or `NE`: Create Room Northeast</li>
+                            <li>`Y` or `NW`: Create Room Northwest</li>
+                            <li>`N` or `SE`: Create Room Southeast</li>
+                            <li>`B` or `SW`: Create Room Southwest</li>
+                            <li>{'`'}Shift + {'>'}{'`'} (Shift + .): Create Room Up (new layer)</li>
+                            <li>{'`'}Shift + {'<'}{'`'} (Shift + ,): Create Room Down (new layer)</li>
+                            <li>Drag from anchor point: Create custom connection</li>
+                        </ul>
+                    </div>
+
+                    <div>
+                        <h4 className="font-semibold text-blue-300">Layer Navigation:</h4>
+                        <ul className="list-disc list-inside ml-4 space-y-1">
+                            <li>`Page Up`: Move to Layer Above</li>
+                            <li>`Page Down`: Move to Layer Below</li>
+                        </ul>
+                    </div>
+                </div>
+            </div>
+        </div>
+    );
+};
+
+
+// Tailwind CSS for animations and custom scrollbar
+const style = `
+  @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap');
+
+  body {
+    font-family: 'Inter', sans-serif;
+    margin: 0;
+    overflow: hidden; /* Prevent body scroll, let specific elements scroll */
+  }
+
+  .custom-scrollbar::-webkit-scrollbar {
+    width: 8px;
+  }
+
+  .custom-scrollbar::-webkit-scrollbar-track {
+    background: #374151; /* gray-700 */
+    border-radius: 10px;
+  }
+
+  .custom-scrollbar::-webkit-scrollbar-thumb {
+    background: #4B5563; /* gray-600 */
+    border-radius: 10px;
+  }
+
+  .custom-scrollbar::-webkit-scrollbar-thumb:hover {
+    background: #6B7280; /* gray-500 */
+  }
+
+  /* Fade-in-down animation for messages */
+  @keyframes fade-in-down {
+    from {
+      opacity: 0;
+      transform: translate(-50%, -20px);
+    }
+    to {
+      opacity: 1;
+      transform: translate(-50%, 0);
+    }
+  }
+
+  .animate-fade-in-down {
+    animation: fade-in-down 0.5s ease-out forwards;
+  }
+
+  /* Fade-in for modal */
+  @keyframes fade-in {
+    from {
+      opacity: 0;
+      transform: translate(-50%, -60%);
+    }
+    to {
+      opacity: 1;
+      transform: translate(-50%, -50%);
+    }
+  }
+
+  .animate-fade-in {
+    animation: fade-in 0.3s ease-out forwards;
+  }
+`;
+
+// Inject Tailwind CSS and custom styles
+const styleTag = document.createElement('style');
+styleTag.innerHTML = style;
+document.head.appendChild(styleTag);
+
+const tailwindScript = document.createElement('script');
+tailwindScript.src = "https://cdn.tailwindcss.com";
+document.head.appendChild(tailwindScript);
+
+
+const root = createRoot(document.querySelector("#main"));
+root.render(
+    <App />
+);
+    </script>
+    <div id="main"></div>    
+</body>
+</html>
